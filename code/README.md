@@ -86,9 +86,13 @@ One row per participant. Columns present depend on `--indices` flag.
 | `n_elig_consequentialism` | Number of tasks used for the consequentialism index |
 | `consequentialism_index` | Relative Consequentialism Index |
 | `consequentialism_se` | Standard error of the consequentialism index |
+| `consequentialism_eb` | EB-shrunk consequentialism index (recommended for downstream analysis) |
+| `consequentialism_shrinkage` | Shrinkage factor B_i (1 = fully shrunk to mean, 0 = no shrinkage) |
 | `n_elig_locality` | Number of tasks used for the locality index |
-| `locality_index` | Locality Preference Index |
+| `locality_index` | Locality Preference Index (raw) |
 | `locality_se` | Standard error of the locality index |
+| `locality_eb` | EB-shrunk locality index (recommended for downstream analysis) |
+| `locality_shrinkage` | Shrinkage factor B_i |
 
 ---
 
@@ -152,6 +156,25 @@ Each index's summary includes a reliability estimate:
 - `rho = 1`: measured without error
 - `rho = 0`: pure noise
 - Key input for power analysis: measurement error inflates residual variance in downstream regressions
+
+### Empirical Bayes shrinkage
+
+Raw indices can be extreme when a participant has few eligible tasks (small denominator). To address this, each index is accompanied by an **empirical Bayes (EB) shrunk** version that pulls imprecise estimates toward the grand mean:
+
+```
+    I_i^EB = (1 - B_i) * I_i + B_i * mu
+```
+
+Where:
+- `mu` = grand mean of the raw index
+- `B_i = SE_i^2 / (sigma^2_theta + SE_i^2)` = shrinkage factor
+- `sigma^2_theta = Var(I_i) - Mean(SE_i^2)` = estimated variance of true parameters (method of moments)
+
+Participants with large SEs (few tasks, small denominators) are heavily shrunk toward the mean. Participants with precise estimates are barely affected. The shrinkage amount is data-driven, not arbitrary.
+
+**The EB index (`*_eb`) is recommended for downstream regressions.** The raw index (`*_index`) is provided for transparency and robustness checks.
+
+References: Morris (1983, JASA); Kane & Staiger (2008); Chetty, Friedman & Rockoff (2014, AER); Walters (2024, NBER WP 33091).
 
 When both indices are computed, cross-index correlations are also reported.
 

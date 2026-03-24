@@ -44,6 +44,11 @@ import statsmodels.api as sm
 
 # ── Configuration ────────────────────────────────────────────────
 
+# Minimum eligible decisions per person to compute a raw index.
+# With EB shrinkage, even n=1 produces a usable (heavily shrunk) estimate,
+# but we still need at least 1 task with a nonzero denominator.
+MIN_ELIGIBLE = 1
+
 # Efficiency difference bins for the consequentialism model.
 # Individual dummies for 1-15, wider bins for 16+.
 # Reference category: diff = 0.
@@ -450,7 +455,7 @@ def compute_index(
         numerator = group["_residual"].sum()
         denominator = group["_gap"].sum()
 
-        if denominator <= 0:
+        if n_tasks < MIN_ELIGIBLE or denominator <= 0:
             results.append({
                 "session_id": session_id,
                 f"n_elig_{index_name}": n_tasks,
@@ -474,6 +479,55 @@ def compute_index(
         })
 
     return pd.DataFrame(results)
+
+
+def apply_eb_shrinkage(results: pd.DataFrame, index_name: str) -> pd.DataFrame:
+    """Apply empirical Bayes shrinkage to a raw index.
+
+    Shrinks noisy estimates toward the grand mean, with shrinkage
+    proportional to each person's estimation variance:
+
+        I_i^EB = (1 - B_i) * I_i + B_i * mu
+        B_i = SE_i^2 / (sigma^2_theta + SE_i^2)
+
+    where sigma^2_theta = Var(I_i) - Mean(SE_i^2) is the estimated
+    variance of true parameters (method of moments).
+
+    References:
+        Morris (1983, JASA); Kane & Staiger (2008, NBER WP 14607);
+        Chetty, Friedman & Rockoff (2014, AER); Walters (2024, NBER WP 33091).
+    """
+    idx_col = f"{index_name}_index"
+    se_col = f"{index_name}_se"
+    eb_col = f"{index_name}_eb"
+    shrinkage_col = f"{index_name}_shrinkage"
+
+    results[eb_col] = np.nan
+    results[shrinkage_col] = np.nan
+
+    valid = results[idx_col].notna()
+    if valid.sum() < 2:
+        return results
+
+    raw = results.loc[valid, idx_col].values
+    se = results.loc[valid, se_col].values
+
+    # Method of moments: sigma^2_theta = Var(I) - Mean(SE^2)
+    var_raw = np.var(raw, ddof=1)
+    mean_se_sq = np.mean(se**2)
+    sigma2_theta = max(0.0, var_raw - mean_se_sq)
+
+    mu = np.mean(raw)
+
+    # Shrinkage factor B_i: 1 = full shrinkage, 0 = no shrinkage
+    B = se**2 / (sigma2_theta + se**2) if sigma2_theta > 0 else np.ones_like(se)
+
+    eb = (1.0 - B) * raw + B * mu
+
+    results.loc[valid, eb_col] = eb
+    results.loc[valid, shrinkage_col] = B
+
+    return results
 
 
 # ── Summary Statistics ───────────────────────────────────────────
@@ -535,6 +589,19 @@ def print_index_summary(results: pd.DataFrame, index_name: str, display_name: st
 
     sig_frac = ((ci.abs() > 2 * se)).mean()
     print(f"\n  Fraction with |I_i| > 2*SE_i: {sig_frac:.1%}")
+
+    # EB shrinkage summary
+    eb_col = f"{index_name}_eb"
+    shrinkage_col = f"{index_name}_shrinkage"
+    if eb_col in valid.columns and valid[eb_col].notna().any():
+        eb = valid[eb_col]
+        B = valid[shrinkage_col]
+        print(f"\n  Empirical Bayes shrinkage:")
+        print(f"    EB index SD:        {eb.std():.3f}  (raw: {ci.std():.3f})")
+        print(f"    Mean shrinkage B_i: {B.mean():.3f}  (1 = full shrinkage, 0 = none)")
+        print(f"    Median shrinkage:   {B.median():.3f}")
+        print(f"    Max shrinkage:      {B.max():.3f}")
+        print(f"    Corr(raw, EB):      {ci.corr(eb):.3f}")
 
 
 # ── Main ─────────────────────────────────────────────────────────
@@ -626,8 +693,9 @@ def main():
             df, elig_col, model, feature_cols, matrix_builder,
         )
 
-        # Compute index
+        # Compute index + EB shrinkage
         results = compute_index(df, elig_col, dv_col, idx_name)
+        results = apply_eb_shrinkage(results, idx_name)
 
         if all_results is None:
             all_results = results
