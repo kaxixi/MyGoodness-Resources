@@ -28,15 +28,25 @@ This produces a JSON file with `sessions`, `decisions`, and `survey_responses` a
 
 ## consequentialism_index.py
 
-Computes a per-person **Relative Consequentialism Index** measuring how much more (or less) each participant responds to efficiency compared to the average participant.
+Computes two per-person preference indices from MyGoodness data:
+
+1. **Relative Consequentialism Index** — how much more (or less) each participant responds to efficiency compared to the average participant
+2. **Locality Preference Index** — how much more (or less) each participant prefers local charities compared to the average participant
+
+Each index is estimated from its own representative agent model, using the same general framework.
 
 ### Quick start
 
 ```bash
+# Compute both indices (default)
 python consequentialism_index.py export.json
+
+# Compute only one index
+python consequentialism_index.py export.json --indices consequentialism
+python consequentialism_index.py export.json --indices locality
 ```
 
-This produces `consequentialism_index.csv` and prints summary statistics to the console.
+This produces `mygoodness_indices.csv` and prints summary statistics to the console.
 
 ### Usage
 
@@ -44,118 +54,145 @@ This produces `consequentialism_index.csv` and prints summary statistics to the 
 python consequentialism_index.py export.json [OPTIONS]
 
 Options:
-  -o, --output PATH        Output CSV path (default: consequentialism_index.csv)
-  --model-type {ols,logit}  Choice model for the representative agent (default: ols)
-  --model-output PATH      Save model coefficient table to this path
+  -o, --output PATH           Output CSV path (default: mygoodness_indices.csv)
+  --indices LIST              Comma-separated indices to compute (default: all)
+                              Options: consequentialism, locality
+  --model-type {ols,logit}    Choice model (default: ols)
+  --model-output PREFIX       Save model summaries to PREFIX_consequentialism.txt, etc.
 ```
 
 ### Examples
 
 ```bash
-# OLS (default) — fast, recommended for most uses
+# Both indices, OLS (default)
 python consequentialism_index.py export.json -o results.csv
 
-# Logit — bounded predictions, no clipping needed
-python consequentialism_index.py export.json --model-type logit -o results.csv
+# Only consequentialism, logit model
+python consequentialism_index.py export.json --indices consequentialism --model-type logit
 
-# Save the representative agent model coefficients for inspection
-python consequentialism_index.py export.json --model-output rep_model.txt
+# Save model coefficient tables for inspection
+python consequentialism_index.py export.json --model-output models
+# produces: models_consequentialism.txt, models_locality.txt
 ```
 
 ### Output CSV columns
+
+One row per participant. Columns present depend on `--indices` flag.
 
 | Column | Description |
 |---|---|
 | `participant_id` | External participant ID (from your survey platform) |
 | `session_id` | MyGoodness session UUID |
-| `n_eligible_tasks` | Number of tasks used to compute the index |
-| `consequentialism_index` | Relative Consequentialism Index (see below) |
-| `se` | Standard error of the index |
-| `denominator` | Denominator of the index (sum of max - rep gaps) |
-| `flag` | Non-empty if the index could not be computed |
+| `n_elig_consequentialism` | Number of tasks used for the consequentialism index |
+| `consequentialism_index` | Relative Consequentialism Index |
+| `consequentialism_se` | Standard error of the consequentialism index |
+| `n_elig_locality` | Number of tasks used for the locality index |
+| `locality_index` | Locality Preference Index |
+| `locality_se` | Standard error of the locality index |
 
-### Methodology
+---
 
-#### 1. Estimation sample
+## Shared Methodology
 
-The representative agent model is estimated on **stranger-stranger decisions with nothing hidden** and where the two options differ in efficiency. This excludes:
+Both indices follow the same framework. A separate representative agent model is estimated for each index, then the index measures each participant's deviation from the model's predictions.
 
-- Kin decisions (either card involves a relative)
-- Self decisions (either card is a reward to self)
-- Decisions where any attribute was initially hidden ("Click to reveal")
-- Decisions where both options save the same number of people
+### Estimation sample
 
-#### 2. Representative agent model
+Both models are estimated on **stranger-stranger decisions with nothing hidden**:
 
-A pooled choice model (OLS or logit) where the dependent variable is 1 if the participant chose the more effective option:
+- Excludes kin decisions (either card involves a relative)
+- Excludes self decisions (either card is a reward to self)
+- Excludes decisions where any attribute was initially hidden ("Click to reveal")
 
-**Efficiency bins:** Individual dummies for differences 1 through 15, then bins for 16-20, 21-30, 31-40, 41-50, 51-75, 76-100, 101-150, 151-200, 201-250, 251-300.
+Each index further restricts to decisions where the relevant attribute varies (see below).
 
-**Location interactions** (reference: both far):
-- Differences 1-12: interacted with both_near and one_far
-- Differences 13-15 and all higher bins: interacted with one_far only
-
-Both-near interactions stop at 12 because near cards have efficacy 1-20, making both-near differences above ~12 very rare.
-
-**Controls** (main effects, no interactions):
-- Identifiable victim on the more/less effective side
-- Named charity on the more/less effective side
-- Cause (domain) on the more/less effective side
-- Gender on the more/less effective side
-- Age group on the more/less effective side
-
-Standard errors are clustered at the individual (session) level.
-
-#### 3. Consequentialism index
+### Index formula
 
 For each participant *i* with eligible tasks *t*:
 
 ```
               sum(Y_it - Y_hat_rep_it)
-    C_i  =  --------------------------
-             sum(Y_hat_max - Y_hat_rep)
+    I_i  =  --------------------------
+              sum(1 - Y_hat_rep_it)
 ```
 
 Where:
-- `Y_it` = 1 if participant chose the more effective option
+- `Y_it` = 1 if participant chose the preferred-direction option (e.g., more effective, or local)
 - `Y_hat_rep` = predicted probability from the representative agent model
-- `Y_hat_max` = 1 (the maximal agent always chooses the more effective option)
+- The maximal agent always chooses the preferred-direction option (`Y_hat_max = 1`)
 
 **Interpretation:**
-- `C_i = 0`: behaves like the average participant
-- `C_i > 0`: more efficiency-sensitive than average
-- `C_i < 0`: less efficiency-sensitive than average
-- `C_i = 1`: always chose the more effective option (maximal agent)
+- `I_i = 0`: behaves like the average participant
+- `I_i > 0`: stronger preference than average (more consequentialist, or more local-preferring)
+- `I_i < 0`: weaker preference than average
+- `I_i = 1`: always chose the preferred-direction option
 
 Values can fall outside [-1, 1] due to noise.
 
-#### 4. Standard errors
+### Standard errors
 
 Per-person SE using a Bernoulli plug-in with person-level adjustment:
 
 ```
                 sqrt(sum(p_hat_it * (1 - p_hat_it)))
-    SE(C_i) =  ------------------------------------
+    SE(I_i) =  ------------------------------------
                             D_i
 ```
 
-Where `p_hat_it = clip(Y_hat_rep + alpha_i, 0.01, 0.99)` and `alpha_i` is participant *i*'s mean residual from the representative agent model. This adapts the variance estimate to each person's deviation from the average.
+Where `p_hat_it = clip(Y_hat_rep + alpha_i, 0.01, 0.99)` and `alpha_i` is participant *i*'s mean residual from the representative agent model.
 
-#### 5. Reliability
+### Reliability
 
-The summary output includes a reliability estimate:
+Each index's summary includes a reliability estimate:
 
 ```
-    rho = 1 - Mean(SE_i^2) / Var(C_i)
+    rho = 1 - Mean(SE_i^2) / Var(I_i)
 ```
 
-- `rho = 1`: the index is measured without error
-- `rho = 0`: the index is pure noise
-- Typical values with ~8-10 eligible tasks per person: 0.3-0.6
+- `rho = 1`: measured without error
+- `rho = 0`: pure noise
+- Key input for power analysis: measurement error inflates residual variance in downstream regressions
 
-Reliability is the key input for power analysis: measurement error in the index inflates residual variance when regressing the index on external measures, reducing statistical power.
+When both indices are computed, cross-index correlations are also reported.
 
-### OLS vs. logit
+---
+
+## Index-Specific Details
+
+### Consequentialism Index
+
+**DV:** `chose_more_effective` (1 if participant chose the option saving more lives)
+
+**Additional eligibility:** efficiency must differ between the two options (`eff_diff > 0`)
+
+**Representative agent model:**
+
+- *Efficiency bins:* Individual dummies for differences 1-15, then wider bins (16-20, 21-30, ..., 251-300). Reference: diff = 0.
+- *Location interactions* (reference: both far):
+  - Diffs 1-12: interacted with both_near and one_far
+  - Diffs 13+: interacted with one_far only
+- *Controls* (main effects): identifiable victim, named charity, cause, gender, age — each oriented to the more-effective / less-effective side
+
+**Expected eligible tasks per person:** ~8-10 (of 12 total decisions)
+
+### Locality Preference Index
+
+**DV:** `chose_local` (1 if participant chose the local/near option)
+
+**Additional eligibility:** exactly one card must be near and one far
+
+**Representative agent model:**
+
+- *Efficiency control:* cubic polynomial of `local_count - far_count` (signed: positive means the local option saves more lives). Captures nonlinear tradeoff between efficiency and locality preference.
+- *Controls* (main effects): identifiable victim, named charity, cause, gender, age — each oriented to the local / far side
+
+**Expected eligible tasks per person:** ~3-5 (depends on location variation in the session)
+
+**Interpretation:** positive index = prefers local more than average; negative = prefers far/efficient more than average.
+
+---
+
+## OLS vs. Logit
 
 | | OLS (linear probability) | Logit |
 |---|---|---|
@@ -164,4 +201,4 @@ Reliability is the key input for power analysis: measurement error in the index 
 | Use in simulations | Recommended (faster Monte Carlo) | Not recommended |
 | Coefficient interpretation | Marginal probability | Log-odds (less intuitive) |
 
-Both produce valid indices. OLS is the default; logit is available via `--model-type logit` for researchers who prefer bounded predictions.
+Both produce valid indices. OLS is the default; logit is available via `--model-type logit`.
